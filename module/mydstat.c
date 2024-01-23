@@ -249,99 +249,82 @@ int get_dsk_info(struct mydstat_info *mydstat){
   return num_devices;
 }
 
+
 int get_net_info(struct mydstat_info *mydstat) {
-    struct net_device *dev = NULL;
-    struct rtnl_link_stats64 stats;
-    int ret = 1;
+    struct file *file;
+    loff_t pos = 0;
+    int buffer_size = 16384;
+    char *buf;
+    ssize_t bytes_read;
 
-    for_each_netdev(&init_net, dev) {
-        if (dev->type != ETH_P_LOOPBACK) {
-            dev_get_stats(dev, &stats);
-
-            // In kết quả
-            pr_info("Interface: %s\n", dev->name);
-            pr_info("Rx bytes: %lld\n", (long long)stats.rx_bytes);
-            pr_info("Tx bytes: %lld\n", (long long)stats.tx_bytes);
-            mydstat->recv = (long long)stats.rx_bytes;
-            mydstat->send = (long long)stats.tx_bytes;
-        }
+    // Open the /proc/net/dev file
+    file = filp_open("/proc/net/dev", O_RDONLY, 0);
+    if (IS_ERR(file)) {
+        pr_err("Failed to open /proc/net/dev\n");
+        return -1;
     }
 
-    // Giải phóng con trỏ net_device (nếu cần)
-    
-    kfree(dev);
+    // Allocate memory for data
+    buf = kmalloc(buffer_size, GFP_KERNEL);
+    if (!buf) {
+        pr_err("Memory allocation failed\n");
+        return -1;
+    }
 
-    return ret;
+    // Read file content
+    memset(buf, 0, buffer_size);
+    bytes_read = kernel_read(file, buf, buffer_size - 1, &pos);
+    if (bytes_read < 0) {
+        pr_err("Error reading file\n");
+        kfree(buf);
+        filp_close(file, NULL);
+        return -1;
+    }
+
+    // Parse network statistics
+    char *line = buf;
+    while (*line) {
+        if (strchr(line, ':')) {
+            char devname[IFNAMSIZ];
+            char recv_bytes_str[20];  // Assuming the max length of recv_bytes is 20
+            char send_bytes_str[20];  // Assuming the max length of send_bytes is 20
+            unsigned long long recv_bytes, send_bytes;
+
+            // Extract the device name and statistics
+            if (sscanf(line, "%[^:]:%[^ ] %*u %*u %*u %*u %*u %*u %*u %[^ ]", devname, recv_bytes_str, send_bytes_str) == 3) {
+                // Check if the device name is not "lo" (loopback)
+                if (strcmp(devname, "lo") != 0) {
+                    // Remove ':' from recv_bytes_str
+                    char *colon = strchr(recv_bytes_str, ':');
+                    if (colon) {
+                        strncpy(recv_bytes_str, colon + 1, sizeof(recv_bytes_str));
+                    }
+
+                    // Convert the string representation of bytes to unsigned long long
+                    kstrtoull(recv_bytes_str, 10, &recv_bytes);
+                    kstrtoull(send_bytes_str, 10, &send_bytes);
+
+                    // Assign the network statistics to the mydstat_info structure
+                    mydstat->recv = recv_bytes;
+                    mydstat->send = send_bytes;
+
+                    break;
+                }
+            }
+        }
+
+        line = strchr(line, '\n');
+        if (!line)
+            break;
+        line++;
+    }
+
+    // Free memory
+    kfree(buf);
+    filp_close(file, NULL);
+
+    return 0;
 }
-//   struct file *file;
-//     loff_t pos = 0;
-//     int buffer_size = 16384;
-//     char *buf;
-//     ssize_t bytes_read;
-
-//     // Opening file
-//     file = filp_open("/proc/net/dev", O_RDONLY, 0);
-//     if (IS_ERR(file))
-//     {
-//         pr_err("Error when opening /proc/net/dev file\n");
-//         return -1;
-//     }
-
-//     // Allocate memory for data
-//     buf = kmalloc(buffer_size, GFP_KERNEL);
-//     if (!buf)
-//     {
-//         pr_err("Error allocation failed\n");
-//         return -1;
-//     }
-    
-//     // Reading file content
-//     memset(buf, 0, buffer_size);
-//     bytes_read = kernel_read_file(file, buf, buffer_size - 1, &pos);
-//     if (bytes_read < 0)
-//     {
-//         pr_err("Error reading file\n");
-//         kfree(buf);
-//         filp_close(file, NULL);
-//         return -1;
-//     }
-// pr_info("check\n");
-//     unsigned long recvTotal = 0;
-//     unsigned long sendTotal = 0;
-
-//     char *line = buf;
-//     char *token;
-//     int lineNum = 0;
-
-//     // Parsing file content
-//     while ((token = strsep(&line, "\n")) != NULL)
-//     {
-//         if (lineNum >= 2) // Skip header lines
-//         {
-//             char interface[256];
-//             unsigned long recv, send;
-//             sscanf(token, "%[^:]: %lu %*u %*u %*u %*u %*u %*u %*u %lu %*u %*u %*u %*u %*u %*u %*u", interface, &recv, &send);
-
-//             if (strcmp(interface, "lo") != 0) // Skip loopback interface
-//             {
-//                 recvTotal += recv;
-//                 sendTotal += send;
-//             }
-//         }
-
-//         lineNum++;
-//     }
-
-//     // Update mydstat with network information
-//     mydstat->recv = recvTotal;
-//     mydstat->send = sendTotal;
-
-//     // Free space
-//     kfree(buf);
-//     filp_close(file, NULL);
-//     return 1;
-// }
-
 int get_paging_info(struct mydstat_info *mydstat)
 {
   s64 uptime;
